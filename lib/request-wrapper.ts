@@ -19,9 +19,11 @@ import { AxiosRequestConfig } from 'axios';
 import axiosCookieJarSupport from 'axios-cookiejar-support';
 import extend = require('extend');
 import FormData = require('form-data');
+import { OutgoingHttpHeaders } from 'http';
 import https = require('https');
 import querystring = require('querystring');
 import { PassThrough as readableStream } from 'stream';
+import zlib = require('zlib');
 import { buildRequestFileObject, getMissingParams, isEmptyObject, isFileData, isFileWithMetadata, stripTrailingSlash } from './helper';
 import logger from './logger';
 
@@ -30,9 +32,11 @@ const globalTransactionId = 'x-global-transaction-id';
 
 export class RequestWrapper {
   private axiosInstance;
+  private compressRequestData: boolean;
 
   constructor(axiosOptions?) {
     axiosOptions = axiosOptions || {};
+    this.compressRequestData = Boolean(axiosOptions.enableGzipCompression);
 
     // override several axios defaults
     // axios sets the default Content-Type for `post`, `put`, and `patch` operations
@@ -205,6 +209,11 @@ export class RequestWrapper {
     // accept gzip encoded responses if Accept-Encoding is not already set
     headers['Accept-Encoding'] = headers['Accept-Encoding'] || 'gzip';
 
+    // compress request body data if enabled
+    if (this.compressRequestData) {
+      data = this.gzipRequestBody(data, headers);
+    }
+
     const requestParams = {
       url,
       method,
@@ -310,6 +319,29 @@ export class RequestWrapper {
     }
 
     return error;
+  }
+
+  private gzipRequestBody(data: Object, headers: OutgoingHttpHeaders): Buffer|Object {
+    // skip compression if user has overridden the encoding header
+    if (headers['content-encoding']) {
+      return data;
+    }
+
+    try {
+      // putting this line inside the 'try' block in case JSON.stringify throws an exception
+      const reqBuffer = Buffer.from(JSON.stringify(data), 'utf8');
+      data = zlib.gzipSync(reqBuffer);
+
+      // update the headers by reference - only if the data was actually compressed
+      headers['content-encoding'] = 'gzip';
+    } catch (err) {
+      // if an exception is caught, `data` will still be in its original form
+      // we can just proceed with the request uncompressed
+      logger.error('Error compressing request body - data will not be compressed.');
+      logger.debug(err);
+    }
+
+    return data;
   }
 }
 
